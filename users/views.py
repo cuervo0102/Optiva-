@@ -14,6 +14,9 @@ from .serializers import (
 )
 from .permissions import IsAdmin, IsAdminOrManager, IsAdminOrSelf
 
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+
 User = get_user_model()
 
 
@@ -170,3 +173,33 @@ class UsersByRoleView(generics.ListAPIView):
             role=self.kwargs["role"],
             is_active=True
         )
+    
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def test_predict(request):
+    """
+    POST /api/auth/test-predict/
+    Body : {"text": "send me the contract let's get started"}
+    """
+    from ml.pipeline import predict, extract_contact
+
+    text = request.data.get("text", "")
+    if not text:
+        return Response(
+            {"error": "text requis"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    result  = predict(text)
+    contact = extract_contact(text) if result["interested"] else {}
+
+    return Response({
+        "text":       text,
+        "score":      result["score"],
+        "percent":    result["percent"],
+        "interested": result["interested"],
+        "label":      result["label"],
+        "email":      contact.get("email", ""),
+        "phone":      contact.get("phone", ""),
+    })

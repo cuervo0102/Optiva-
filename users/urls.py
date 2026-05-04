@@ -8,6 +8,9 @@ from .views import (
     UsersByRoleView,
 )
 
+from .views import test_predict
+
+
 urlpatterns = [
     path("login/",           LoginView.as_view(),         name="login"),
     path("logout/",          LogoutView.as_view(),         name="logout"),
@@ -19,4 +22,6 @@ urlpatterns = [
     path("users/<int:pk>/",           UserDetailView.as_view(), name="user-detail"),
     path("users/<int:pk>/unlock/",    UnlockUserView.as_view(), name="user-unlock"),
     path("users/role/<str:role>/",    UsersByRoleView.as_view(),name="users-by-role"),
+
+    path("test-predict/", test_predict, name="test-predict"),
 ]
