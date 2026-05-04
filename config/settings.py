@@ -50,6 +50,8 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "django_celery_results",
     'users',
+    "conversations",  
+    "leads", 
 ]
 
 MIDDLEWARE = [
@@ -186,3 +188,10 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "1.0.0",
 }
 
+CELERY_BROKER_URL = os.getenv("RABBITMQ_URL", "amqp://optiva:optiva123@192.168.227.216:5672/")
+CELERY_RESULT_BACKEND    = "django-db"
+CELERY_ACCEPT_CONTENT    = ["json"]
+CELERY_TASK_SERIALIZER   = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE          = "Africa/Casablanca"
+CELERY_TASK_TRACK_STARTED = True
