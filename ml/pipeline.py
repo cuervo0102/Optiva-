@@ -1,127 +1,128 @@
 import pickle
 import re
+import numpy as np
 from pathlib import Path
 from django.conf import settings
 
-_DIR = Path(settings.ML_MODELS_DIR)
-
+_DIR    = Path(settings.ML_MODELS_DIR)
 _xgb    = pickle.load(open(_DIR / "model_tfidf_v2.pkl", "rb"))
-_svd    = pickle.load(open(_DIR / "svd_model.pkl",      "rb"))
+_svd    = pickle.load(open(_DIR / "svd_model (2).pkl",      "rb"))
 _scaler = pickle.load(open(_DIR / "scaler_tfidf.pkl",   "rb"))
-_tfidf  = pickle.load(open(_DIR / "tfidf_model.pkl",    "rb"))
+_tfidf  = pickle.load(open(_DIR / "tfidf_model (1).pkl",    "rb"))
 
 print("Modeles ML charges")
 
+n_features = _scaler.n_features_in_
+print(f"Scaler attend : {n_features} features")
+
+
+def _get_features(text: str) -> np.ndarray:
+    """Produit exactement le bon nombre de features"""
+    X_tfidf = _tfidf.transform([text])
+    X_svd   = _svd.transform(X_tfidf) 
+
+    if n_features == 200:
+        return X_svd
+
+    sentences  = [s.strip() for s in text.replace('\n', '.').split('.') if s.strip()]
+    total      = len(sentences)
+    third      = max(1, total // 3)
+    beginning  = ' '.join(sentences[:third]).lower()
+    end        = ' '.join(sentences[2*third:]).lower()
+    full       = text.lower()
+
+    pos = np.array([[
+        min(len(full.split()) / 500, 1.0),
+        min(total / 50, 1.0),
+        float('@' in full),
+        float(any(p in full for p in ['06', '07', '05', '+212', '555'])),
+        len(end.split()) / max(len(beginning.split()), 1),
+    ]], dtype=np.float32)
+
+    return np.hstack([X_svd, pos])
+
 
 def predict(text: str) -> dict:
-    X = _tfidf.transform([text])
-    X = _svd.transform(X)
-    X = _scaler.transform(X)
+    X     = _get_features(text)
+    X     = _scaler.transform(X)
     proba = float(_xgb.predict_proba(X)[0][1])
-
-    words      = text.lower().split()
-    word_count = len(words)
-
-    client_lines = []
-    for line in text.split('.'):
-        line = line.strip()
-        if line.lower().startswith('commercial'):
-            continue
-        client_lines.append(line.lower())
-    client_text = ' '.join(client_lines)
-
-    REJECT = [
-        'think about it', "i'll get back", 'maybe later',
-        'not right now', 'not interested', 'no thanks',
-        'too expensive', "can't afford", 'not a good fit',
-        'already have', 'not what we need', 'dealbreaker',
-        'not certified', 'not available', 'next year',
-        'another provider', 'already signed',
-        'let me think', 'check internally',
-        'check a few things', 'have a better idea',
-        'send me an email', 'internally first',
-        'need to discuss', 'need to check',
-        'get back to you', 'i will get back',
-        "i'll have a better", 'by then',
-    ]
-
-    BUY_CLIENT = [
-        "let's get started", "let's do it",
-        'move forward', 'i want to sign',
-        'ready to start', 'purchase now',
-        'start today', 'start the trial',
-        "let's begin", 'i want to buy',
-        'we will take it', "we'll take it",
-    ]
-
-    BUY_FULL = [
-        'send me the contract', 'when can we start',
-        'sign up', 'send the contract', 'onboarding',
-        'sign before',
-    ]
-
-    has_reject     = any(r in client_text for r in REJECT)
-    has_buy_client = any(b in client_text for b in BUY_CLIENT)
-    has_buy_full   = any(b in text.lower() for b in BUY_FULL)
-    has_strong_buy = has_buy_client or (has_buy_full and not has_reject)
-
-    if has_reject and not has_buy_client:
-        proba = min(proba, 0.30)
-    if has_strong_buy and not has_reject:
-        proba = max(proba, 0.80)
-    if word_count > 150 and not has_strong_buy:
-        CLOSING = ["let's", 'i want to', 'ready to', "we'll take"]
-        if not any(c in client_text for c in CLOSING):
-            proba = min(proba, 0.40)
-    if word_count < 20 and not has_strong_buy:
-        proba = min(proba, 0.35)
-
     return {
         "score":      round(proba, 4),
         "percent":    f"{proba*100:.1f}%",
         "interested": proba >= 0.65,
         "label":      "INTERESSE" if proba >= 0.65 else "PAS INTERESSE",
-
     }
-
-
-def extract_name(text):
-    patterns = [
-        r"i called\s+([A-ZÀ-Ö][a-zà-ö]+(?:\s+[A-ZÀ-Ö][a-zà-ö]+)?)",
-        r"my name is \s+([A-ZÀ-Ö][a-zà-ö]+(?:\s+[A-ZÀ-Ö][a-zà-ö]+)?)",
-        r"c'est\s+([A-ZÀ-Ö][a-zà-ö]+(?:\s+[A-ZÀ-Ö][a-zà-ö]+)?)\s+(?:à l'appareil|qui parle)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-    return None
-
 
 
 def extract_contact(text: str) -> dict:
+
     emails = re.findall(
-        r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
-    phones = re.findall(r'(\+?[\d\s\-\.]{9,15})', text)
+        r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text
+    )
+
+    if not emails:
+        clean = text.replace('\u2019', "'").replace('\u2018', "'")
+        at_match = re.search(
+            r"(?:it'?s|is|email\s+is)\s+([\w][\w.\-\s]{1,40}?)\s+at\s+([\w\.-]+\.[a-zA-Z]{2,})",
+            clean, re.IGNORECASE
+        )
+        if at_match:
+            local  = at_match.group(1).strip().replace(' ', '.')
+            domain = at_match.group(2).strip()
+            emails = [f"{local}@{domain}"]
+
+    phones = re.findall(r'(\+?[\d][\d\s\-\.]{7,14})', text)
     phones_clean = [
-        p.strip() for p in phones
-        if len(re.sub(r'\D', '', p)) >= 9
+        re.sub(r'[\s\-\.]', '', p).strip()
+        for p in phones
+        if len(re.sub(r'\D', '', p)) >= 8
     ]
+
+    name = None
+    for pattern in [
+        r"my name is\s+([A-ZÀ-Ö][a-zA-Zà-ö]+(?:\s+[A-ZÀ-Ö][a-zA-Zà-ö]+)?)",
+        r"(?:yes,?\s+)?my name(?:'s| is)\s+([A-ZÀ-Ö][a-zA-Zà-ö]+)",
+        r"i(?:'m| am)\s+([A-ZÀ-Ö][a-zA-Zà-ö]+)",
+    ]:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            name = match.group(1).strip()
+            break
+
     return {
-        "email": emails[0] if emails else "",
+        "email": emails[0]       if emails       else "",
         "phone": phones_clean[0] if phones_clean else "",
-        "name":       extract_name(text),
+        "name":  name            if name         else "",
     }
 
-
-
-
-
 def transcribe(audio_path: str) -> str:
+    import subprocess
+    import tempfile
+    import os
     from faster_whisper import WhisperModel
-    model = WhisperModel("base", device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(audio_path, language="en")
-    return " ".join(seg.text for seg in segments)
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        subprocess.run([
+            "ffmpeg", "-i", audio_path,
+            "-ar", "16000",
+            "-ac", "1",
+            "-y", tmp_path
+        ], capture_output=True, check=True)
+
+        model = WhisperModel(
+            settings.WHISPER_MODEL_SIZE,
+            device=settings.WHISPER_DEVICE,
+            compute_type="int8"
+        )
+        segments, _ = model.transcribe(tmp_path, language="en")
+        return " ".join(seg.text for seg in segments)
+
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def process_call(audio_path: str) -> dict:
@@ -130,7 +131,11 @@ def process_call(audio_path: str) -> dict:
     contact = extract_contact(text) if result["interested"] else {}
     return {
         "transcript": text,
-        **result,
-        "email": contact.get("email", ""),
-        "phone": contact.get("phone", ""),
+        "score":      result["score"],
+        "percent":    result["percent"],
+        "interested": result["interested"],
+        "label":      result["label"],
+        "email":      contact.get("email", ""),
+        "phone":      contact.get("phone", ""),
+        "name":       contact.get("name",  ""),
     }
